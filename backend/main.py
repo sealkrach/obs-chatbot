@@ -39,6 +39,21 @@ app.add_middleware(
 )
 
 
+# ── LLM runtime config (mutable) ─────────────────────────────────────
+
+_llm_config = {
+    "provider": cfg.llm_provider,
+    "openai_api_key": cfg.openai_api_key,
+    "openai_model": cfg.openai_model,
+    "openai_base_url": cfg.openai_base_url,
+    "ollama_model": cfg.ollama_model,
+}
+
+
+def get_llm_config() -> dict:
+    return _llm_config
+
+
 # ── Health ─────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -51,7 +66,48 @@ async def health():
             ollama_ok = r.status_code == 200
     except Exception:
         pass
-    return {"status": "ok", "ollama": ollama_ok, "model": cfg.ollama_model}
+    return {
+        "status": "ok",
+        "ollama": ollama_ok,
+        "provider": _llm_config["provider"],
+        "model": _llm_config["openai_model"] if _llm_config["provider"] == "openai" else _llm_config["ollama_model"],
+    }
+
+
+# ── LLM config endpoints ─────────────────────────────────────────────
+
+class LLMConfigRequest(BaseModel):
+    provider: str = "ollama"             # "ollama" or "openai"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
+    ollama_model: str = "llama3.1"
+
+
+@app.get("/api/llm/config")
+async def get_llm_config_endpoint():
+    return {
+        "provider": _llm_config["provider"],
+        "openai_api_key_set": bool(_llm_config["openai_api_key"]),
+        "openai_api_key_preview": _llm_config["openai_api_key"][:8] + "…" if _llm_config["openai_api_key"] else "",
+        "openai_model": _llm_config["openai_model"],
+        "openai_base_url": _llm_config["openai_base_url"],
+        "ollama_model": _llm_config["ollama_model"],
+    }
+
+
+@app.put("/api/llm/config")
+async def update_llm_config(req: LLMConfigRequest):
+    from backend.agents.obs_agent import clear_all_sessions
+    _llm_config["provider"] = req.provider
+    if req.openai_api_key:
+        _llm_config["openai_api_key"] = req.openai_api_key
+    _llm_config["openai_model"] = req.openai_model
+    _llm_config["openai_base_url"] = req.openai_base_url
+    _llm_config["ollama_model"] = req.ollama_model
+    # Reset all agent sessions so they pick up the new LLM
+    clear_all_sessions()
+    return {"status": "ok", "provider": _llm_config["provider"]}
 
 
 # ── REST chat (simple, sans streaming) ────────────────────────────────

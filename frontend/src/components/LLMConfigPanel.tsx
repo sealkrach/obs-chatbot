@@ -1,0 +1,221 @@
+import React, { useEffect, useState } from "react";
+import { Settings, X, Check, Key, Globe, Cpu, Loader2 } from "lucide-react";
+
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8001";
+
+interface LLMConfig {
+  provider: string;
+  openai_api_key_set: boolean;
+  openai_api_key_preview: string;
+  openai_model: string;
+  openai_base_url: string;
+  ollama_model: string;
+}
+
+const OPENAI_MODELS = [
+  "gpt-4o-mini",
+  "gpt-4o",
+  "gpt-4-turbo",
+  "gpt-3.5-turbo",
+];
+
+export default function LLMConfigPanel() {
+  const [open, setOpen] = useState(false);
+  const [config, setConfig] = useState<LLMConfig | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  // Form state
+  const [provider, setProvider] = useState("ollama");
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("gpt-4o-mini");
+  const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
+  const [ollamaModel, setOllamaModel] = useState("llama3.1");
+
+  useEffect(() => {
+    if (open) fetchConfig();
+  }, [open]);
+
+  async function fetchConfig() {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API_URL}/api/llm/config`);
+      const data: LLMConfig = await r.json();
+      setConfig(data);
+      setProvider(data.provider);
+      setModel(data.openai_model);
+      setBaseUrl(data.openai_base_url);
+      setOllamaModel(data.ollama_model);
+      setApiKey("");
+    } catch {}
+    setLoading(false);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      await fetch(`${API_URL}/api/llm/config`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider,
+          openai_api_key: apiKey || "",
+          openai_model: model,
+          openai_base_url: baseUrl,
+          ollama_model: ollamaModel,
+        }),
+      });
+      setSaved(true);
+      await fetchConfig();
+      setTimeout(() => setSaved(false), 2000);
+    } catch {}
+    setSaving(false);
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        title="Configuration LLM"
+        className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+      >
+        <Settings size={14} />
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setOpen(false)}>
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700">
+              <div className="flex items-center gap-2">
+                <Cpu size={18} className="text-violet-500" />
+                <h3 className="font-semibold text-slate-800 dark:text-slate-100">Configuration LLM</h3>
+              </div>
+              <button onClick={() => setOpen(false)} className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-400">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {loading ? (
+                <div className="text-center py-8 text-slate-400">
+                  <Loader2 size={20} className="animate-spin mx-auto mb-2" />
+                  Chargement...
+                </div>
+              ) : (
+                <>
+                  {/* Provider toggle */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">Provider</label>
+                    <div className="flex gap-2">
+                      {(["ollama", "openai"] as const).map(p => (
+                        <button
+                          key={p}
+                          onClick={() => setProvider(p)}
+                          className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium transition-all border ${
+                            provider === p
+                              ? "bg-violet-50 dark:bg-violet-900/30 border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300"
+                              : "bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:border-slate-300"
+                          }`}
+                        >
+                          {p === "ollama" ? "🦙 Ollama (local)" : "🤖 OpenAI / Compatible"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {provider === "openai" ? (
+                    <>
+                      {/* API Key */}
+                      <div>
+                        <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
+                          <Key size={12} className="inline mr-1" />
+                          API Key
+                        </label>
+                        <input
+                          type="password"
+                          value={apiKey}
+                          onChange={e => setApiKey(e.target.value)}
+                          placeholder={config?.openai_api_key_set ? `Actuelle: ${config.openai_api_key_preview}` : "sk-..."}
+                          className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                        />
+                        {config?.openai_api_key_set && !apiKey && (
+                          <p className="text-xs text-emerald-500 mt-1">✓ Clé API configurée</p>
+                        )}
+                      </div>
+
+                      {/* Model */}
+                      <div>
+                        <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Modèle</label>
+                        <select
+                          value={model}
+                          onChange={e => setModel(e.target.value)}
+                          className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                        >
+                          {OPENAI_MODELS.map(m => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Base URL */}
+                      <div>
+                        <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
+                          <Globe size={12} className="inline mr-1" />
+                          Base URL (OpenAI-compatible)
+                        </label>
+                        <input
+                          value={baseUrl}
+                          onChange={e => setBaseUrl(e.target.value)}
+                          placeholder="https://api.openai.com/v1"
+                          className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 px-3 py-2 text-sm font-mono text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                        />
+                        <p className="text-xs text-slate-400 mt-1">Compatible : OpenAI, Azure, Mistral, Groq, Together, etc.</p>
+                      </div>
+                    </>
+                  ) : (
+                    /* Ollama model */
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Modèle Ollama</label>
+                      <input
+                        value={ollamaModel}
+                        onChange={e => setOllamaModel(e.target.value)}
+                        placeholder="llama3.1"
+                        className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                      />
+                      <p className="text-xs text-slate-400 mt-1">Ex: llama3.1, mistral, gemma2:9b, qwen2.5:14b</p>
+                    </div>
+                  )}
+
+                  {/* Save button */}
+                  <button
+                    onClick={handleSave}
+                    disabled={saving}
+                    className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                      saved
+                        ? "bg-emerald-500 text-white"
+                        : "bg-violet-600 hover:bg-violet-700 text-white"
+                    } disabled:opacity-50`}
+                  >
+                    {saving ? (
+                      <><Loader2 size={14} className="animate-spin" /> Sauvegarde...</>
+                    ) : saved ? (
+                      <><Check size={14} /> Sauvegardé !</>
+                    ) : (
+                      "Appliquer"
+                    )}
+                  </button>
+
+                  <p className="text-xs text-slate-400 text-center">
+                    Le changement de provider réinitialise les sessions actives.
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}

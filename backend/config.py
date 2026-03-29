@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     teams_app_id:         str = ""
     teams_app_password:   str = ""
     cors_origins:         str = "http://localhost:5173,http://localhost:3000"
+    # LLM provider: "ollama" or "openai"
+    llm_provider:         str = "ollama"
+    openai_api_key:       str = ""
+    openai_model:         str = "gpt-4o-mini"
+    openai_base_url:      str = "https://api.openai.com/v1"
 
     @property
     def cors_origin_list(self) -> list[str]:

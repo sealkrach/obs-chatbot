@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { AlertTriangle, CheckCircle, ChevronDown, ChevronRight,
          Loader2, RefreshCw, Send, Terminal, Trash2, Wifi, WifiOff } from "lucide-react";
 import { useChat, type Message } from "../hooks/useChat";
+import LLMConfigPanel from "./LLMConfigPanel";
 
 // ── Utilitaire ────────────────────────────────────────────────────────
 
@@ -193,6 +194,7 @@ export default function ChatWindow() {
         </div>
         <div className="flex items-center gap-3">
           <ConnectionBadge state={connState} onReconnect={reconnect} />
+          <LLMConfigPanel />
           <button
             onClick={() => setShowTools(t => !t)}
             title={showTools ? "Masquer les appels outils" : "Afficher les appels outils"}

@@ -1,4 +1,4 @@
-"""ObsAgent — LangChain agent avec Ollama et tools d'observabilité."""
+"""ObsAgent — LangChain agent avec Ollama ou OpenAI et tools d'observabilité."""
 from __future__ import annotations
 
 import logging
@@ -34,29 +34,36 @@ Règles :
 """
 
 
-class StreamingCallbackHandler(AsyncCallbackHandler):
-    """Callback pour streamer les tokens au fur et à mesure."""
+def _build_llm():
+    """Build the LLM based on current runtime config."""
+    from backend.main import get_llm_config
+    llm_cfg = get_llm_config()
 
-    def __init__(self, queue) -> None:
-        self.queue = queue
-
-    async def on_llm_new_token(self, token: str, **kwargs) -> None:
-        await self.queue.put(token)
-
-    async def on_agent_finish(self, finish, **kwargs) -> None:
-        await self.queue.put(None)
+    if llm_cfg["provider"] == "openai" and llm_cfg["openai_api_key"]:
+        from langchain_openai import ChatOpenAI
+        log.info("Using OpenAI provider: model=%s", llm_cfg["openai_model"])
+        return ChatOpenAI(
+            api_key=llm_cfg["openai_api_key"],
+            model=llm_cfg["openai_model"],
+            base_url=llm_cfg["openai_base_url"],
+            temperature=0.1,
+            max_tokens=2048,
+        )
+    else:
+        log.info("Using Ollama provider: model=%s", llm_cfg["ollama_model"])
+        return ChatOllama(
+            base_url=cfg.ollama_base_url,
+            model=llm_cfg["ollama_model"],
+            temperature=0.1,
+            num_predict=2048,
+        )
 
 
 class ObsAgent:
     """Agent principal — instancié une fois par session WebSocket."""
 
     def __init__(self) -> None:
-        self._llm = ChatOllama(
-            base_url=cfg.ollama_base_url,
-            model=cfg.ollama_model,
-            temperature=0.1,
-            num_predict=2048,
-        )
+        self._llm = _build_llm()
         self._memory = ConversationBufferWindowMemory(
             memory_key="chat_history",
             return_messages=True,
@@ -76,28 +83,23 @@ class ObsAgent:
         )
 
     async def chat(self, message: str) -> dict:
-        """Traitement — retourne réponse + étapes intermédiaires."""
         try:
             result = await self._executor.ainvoke({"input": message})
-
             answer = result.get("output", "Je n'ai pas pu obtenir de réponse.")
             steps = [
                 {"tool": s[0].tool, "input": s[0].tool_input, "output": str(s[1])[:500]}
                 for s in result.get("intermediate_steps", [])
             ]
-
             return {"answer": answer, "steps": steps, "error": None}
-
         except Exception as e:
             log.exception("Agent error: %s", e)
             return {
-                "answer": f"Une erreur s'est produite : {e}\nVérifie qu'Ollama est démarré.",
+                "answer": f"Une erreur s'est produite : {e}",
                 "steps": [],
                 "error": str(e),
             }
 
     def reset(self) -> None:
-        """Réinitialise l'historique de la session."""
         self._memory.clear()
 
 
@@ -115,3 +117,9 @@ def get_agent(session_id: str) -> ObsAgent:
 
 def delete_session(session_id: str) -> None:
     _sessions.pop(session_id, None)
+
+
+def clear_all_sessions() -> None:
+    """Clear all sessions — called when LLM config changes."""
+    _sessions.clear()
+    log.info("All agent sessions cleared (LLM config changed)")
