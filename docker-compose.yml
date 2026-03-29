@@ -12,9 +12,11 @@ services:
     # deploy:
     #   resources: { reservations: { devices: [{ capabilities: [gpu] }] } }
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "ollama list || true"]
       interval: 10s
-      retries: 5
+      timeout: 5s
+      retries: 10
+      start_period: 15s
 
   ollama-pull:
     image: ollama/ollama:latest
@@ -26,6 +28,16 @@ services:
     entrypoint: ["ollama", "pull", "${OLLAMA_MODEL:-llama3.1}"]
     restart: "no"
 
+  mock-obs:
+    build: ./mock-obs
+    ports: ["9000:9000"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9000/health')\""]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   chatbot-backend:
     build:
       context: .
@@ -34,9 +46,12 @@ services:
     env_file: .env
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
-      OBS_API_URL:     ${OBS_API_URL:-http://host.docker.internal:8000}
+      OBS_API_URL: http://mock-obs:9000
+      VICTORIAMETRICS_URL: http://mock-obs:9000
     depends_on:
       ollama:
+        condition: service_healthy
+      mock-obs:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -48,7 +63,7 @@ services:
     build:
       context: frontend
       dockerfile: Dockerfile.frontend
-    ports: ["5173:80"]
+    ports: ["5174:80"]
     environment:
       VITE_WS_URL:  ws://localhost:8001/ws/chat
       VITE_API_URL: http://localhost:8001

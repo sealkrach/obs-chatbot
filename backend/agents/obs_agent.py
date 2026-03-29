@@ -1,14 +1,13 @@
-"""ObsAgent — LangChain ReAct agent avec Ollama et tools d'observabilité."""
+"""ObsAgent — LangChain agent avec Ollama et tools d'observabilité."""
 from __future__ import annotations
 
 import logging
-from typing import AsyncIterator
 
-from langchain.agents import AgentExecutor, create_react_agent
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_community.chat_models import ChatOllama
+from langchain.agents import AgentExecutor, initialize_agent, AgentType
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_ollama import ChatOllama
 from langchain_core.callbacks import AsyncCallbackHandler
+from langchain.memory import ConversationBufferWindowMemory
 
 from backend.config import get_settings
 from backend.tools.obs_tools import ALL_TOOLS
@@ -17,7 +16,7 @@ log = logging.getLogger(__name__)
 cfg = get_settings()
 
 
-SYSTEM_PROMPT = """Tu es un assistant expert en observabilité infra, connecté à une plateforme de monitoring en temps réel.
+SYSTEM_PREFIX = """Tu es un assistant expert en observabilité infra, connecté à une plateforme de monitoring en temps réel.
 
 Tu peux utiliser ces outils :
 - `get_active_alerts` : lister les alertes actives (filtres : severity, service, region)
@@ -32,10 +31,6 @@ Règles :
 3. Réponds en français, de manière concise et structurée avec du Markdown
 4. Si une métrique dépasse 80%, signale-le clairement
 5. Pour les rapports, utilise generate_report puis synthétise les résultats
-
-Contexte actuel :
-- Région principale : {region}
-- Environnement : {environment}
 """
 
 
@@ -49,7 +44,7 @@ class StreamingCallbackHandler(AsyncCallbackHandler):
         await self.queue.put(token)
 
     async def on_agent_finish(self, finish, **kwargs) -> None:
-        await self.queue.put(None)  # signal de fin
+        await self.queue.put(None)
 
 
 class ObsAgent:
@@ -59,70 +54,51 @@ class ObsAgent:
         self._llm = ChatOllama(
             base_url=cfg.ollama_base_url,
             model=cfg.ollama_model,
-            temperature=0.1,      # déterministe pour l'infra
+            temperature=0.1,
             num_predict=2048,
         )
-        self._executor = self._build_executor()
-        self._history: list = []
-
-    def _build_executor(self) -> AgentExecutor:
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", SYSTEM_PROMPT),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-            MessagesPlaceholder("agent_scratchpad"),
-        ])
-
-        agent = create_react_agent(
-            llm=self._llm,
-            tools=ALL_TOOLS,
-            prompt=prompt,
+        self._memory = ConversationBufferWindowMemory(
+            memory_key="chat_history",
+            return_messages=True,
+            k=10,
         )
-
-        return AgentExecutor(
-            agent=agent,
+        self._executor = initialize_agent(
             tools=ALL_TOOLS,
+            llm=self._llm,
+            agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
             verbose=True,
+            memory=self._memory,
             max_iterations=6,
             handle_parsing_errors=True,
-            return_intermediate_steps=True,
+            agent_kwargs={
+                "prefix": SYSTEM_PREFIX,
+            },
         )
 
     async def chat(self, message: str) -> dict:
-        """Traitement synchrone — retourne réponse + étapes intermédiaires."""
+        """Traitement — retourne réponse + étapes intermédiaires."""
         try:
-            result = await self._executor.ainvoke({
-                "input":        message,
-                "chat_history": self._history,
-                "region":       "eu-west-1",
-                "environment":  "production",
-            })
+            result = await self._executor.ainvoke({"input": message})
 
             answer = result.get("output", "Je n'ai pas pu obtenir de réponse.")
-            steps  = [
+            steps = [
                 {"tool": s[0].tool, "input": s[0].tool_input, "output": str(s[1])[:500]}
                 for s in result.get("intermediate_steps", [])
             ]
-
-            # Mettre à jour l'historique (garder les 10 derniers échanges)
-            self._history.append(HumanMessage(content=message))
-            self._history.append(AIMessage(content=answer))
-            if len(self._history) > 20:
-                self._history = self._history[-20:]
 
             return {"answer": answer, "steps": steps, "error": None}
 
         except Exception as e:
             log.exception("Agent error: %s", e)
             return {
-                "answer": f"Une erreur s'est produite : {e}\nVérifie qu'Ollama est démarré (`ollama serve`).",
-                "steps":  [],
-                "error":  str(e),
+                "answer": f"Une erreur s'est produite : {e}\nVérifie qu'Ollama est démarré.",
+                "steps": [],
+                "error": str(e),
             }
 
     def reset(self) -> None:
         """Réinitialise l'historique de la session."""
-        self._history.clear()
+        self._memory.clear()
 
 
 # ── Pool d'agents par session ─────────────────────────────────────────

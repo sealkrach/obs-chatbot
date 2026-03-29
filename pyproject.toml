@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "obs-chatbot"
@@ -14,9 +14,10 @@ dependencies = [
     "pydantic>=2.6.0",
     "pydantic-settings>=2.2.0",
     # LangChain + Ollama
-    "langchain>=0.1.16",
-    "langchain-community>=0.0.36",
-    "langchain-core>=0.1.46",
+    "langchain>=0.2.0,<0.3",
+    "langchain-community>=0.2.0,<0.3",
+    "langchain-core>=0.2.0,<0.3",
+    "langchain-ollama>=0.1.0",
     "ollama>=0.1.8",
     # HTTP
     "aiohttp>=3.9.0",
