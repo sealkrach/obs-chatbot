@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     chatbot_secret_key:   str = "changeme"
     teams_app_id:         str = ""
     teams_app_password:   str = ""
-    cors_origins:         str = "http://localhost:5173,http://localhost:3000"
+    cors_origins:         str = "http://localhost:5173,http://localhost:5174,http://localhost:3000"
     # LLM provider: "ollama" or "openai"
     llm_provider:         str = "ollama"
     openai_api_key:       str = ""

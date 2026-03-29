@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend.config import get_settings
-from backend.agents.obs_agent import get_agent, delete_session
+from backend.llm_config import get_llm_config, update_llm_config
+from backend.agents.obs_agent import get_agent, delete_session, clear_all_sessions
 
 log = logging.getLogger(__name__)
 cfg = get_settings()
@@ -39,26 +40,12 @@ app.add_middleware(
 )
 
 
-# ── LLM runtime config (mutable) ─────────────────────────────────────
-
-_llm_config = {
-    "provider": cfg.llm_provider,
-    "openai_api_key": cfg.openai_api_key,
-    "openai_model": cfg.openai_model,
-    "openai_base_url": cfg.openai_base_url,
-    "ollama_model": cfg.ollama_model,
-}
-
-
-def get_llm_config() -> dict:
-    return _llm_config
-
-
 # ── Health ─────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
     import httpx
+    llm_cfg = get_llm_config()
     ollama_ok = False
     try:
         async with httpx.AsyncClient(timeout=3) as c:
@@ -69,15 +56,15 @@ async def health():
     return {
         "status": "ok",
         "ollama": ollama_ok,
-        "provider": _llm_config["provider"],
-        "model": _llm_config["openai_model"] if _llm_config["provider"] == "openai" else _llm_config["ollama_model"],
+        "provider": llm_cfg["provider"],
+        "model": llm_cfg["openai_model"] if llm_cfg["provider"] == "openai" else llm_cfg["ollama_model"],
     }
 
 
 # ── LLM config endpoints ─────────────────────────────────────────────
 
 class LLMConfigRequest(BaseModel):
-    provider: str = "ollama"             # "ollama" or "openai"
+    provider: str = "ollama"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
     openai_base_url: str = "https://api.openai.com/v1"
@@ -86,28 +73,88 @@ class LLMConfigRequest(BaseModel):
 
 @app.get("/api/llm/config")
 async def get_llm_config_endpoint():
+    llm_cfg = get_llm_config()
     return {
-        "provider": _llm_config["provider"],
-        "openai_api_key_set": bool(_llm_config["openai_api_key"]),
-        "openai_api_key_preview": _llm_config["openai_api_key"][:8] + "…" if _llm_config["openai_api_key"] else "",
-        "openai_model": _llm_config["openai_model"],
-        "openai_base_url": _llm_config["openai_base_url"],
-        "ollama_model": _llm_config["ollama_model"],
+        "provider": llm_cfg["provider"],
+        "openai_api_key_set": bool(llm_cfg["openai_api_key"]),
+        "openai_api_key_preview": llm_cfg["openai_api_key"][:8] + "…" if llm_cfg["openai_api_key"] else "",
+        "openai_model": llm_cfg["openai_model"],
+        "openai_base_url": llm_cfg["openai_base_url"],
+        "ollama_model": llm_cfg["ollama_model"],
     }
 
 
 @app.put("/api/llm/config")
-async def update_llm_config(req: LLMConfigRequest):
-    from backend.agents.obs_agent import clear_all_sessions
-    _llm_config["provider"] = req.provider
-    if req.openai_api_key:
-        _llm_config["openai_api_key"] = req.openai_api_key
-    _llm_config["openai_model"] = req.openai_model
-    _llm_config["openai_base_url"] = req.openai_base_url
-    _llm_config["ollama_model"] = req.ollama_model
-    # Reset all agent sessions so they pick up the new LLM
+async def update_llm_config_endpoint(req: LLMConfigRequest):
+    update_llm_config(
+        provider=req.provider,
+        openai_api_key=req.openai_api_key,
+        openai_model=req.openai_model,
+        openai_base_url=req.openai_base_url,
+        ollama_model=req.ollama_model,
+    )
     clear_all_sessions()
-    return {"status": "ok", "provider": _llm_config["provider"]}
+    llm_cfg = get_llm_config()
+    return {"status": "ok", "provider": llm_cfg["provider"]}
+
+
+@app.post("/api/llm/test")
+async def test_llm_connection():
+    """Test connectivity with the currently configured LLM provider."""
+    import httpx
+    llm_cfg = get_llm_config()
+
+    if llm_cfg["provider"] == "openai":
+        if not llm_cfg["openai_api_key"]:
+            return {"ok": False, "error": "Aucune clé API configurée"}
+        try:
+            base = llm_cfg["openai_base_url"].rstrip("/")
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(
+                    f"{base}/models",
+                    headers={"Authorization": f"Bearer {llm_cfg['openai_api_key']}"},
+                )
+            if r.status_code == 200:
+                models = r.json().get("data", [])
+                model_ids = [m.get("id", "") for m in models[:10]]
+                target = llm_cfg["openai_model"]
+                found = any(target in mid for mid in model_ids)
+                return {
+                    "ok": True,
+                    "provider": "openai",
+                    "model": target,
+                    "model_available": found,
+                    "models_sample": model_ids[:5],
+                }
+            elif r.status_code == 401:
+                return {"ok": False, "error": "Clé API invalide (401 Unauthorized)"}
+            else:
+                return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"}
+        except httpx.ConnectError:
+            return {"ok": False, "error": f"Impossible de contacter {llm_cfg['openai_base_url']}"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    else:  # ollama
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                r = await c.get(f"{cfg.ollama_base_url}/api/tags")
+            if r.status_code != 200:
+                return {"ok": False, "error": f"Ollama HTTP {r.status_code}"}
+            models = [m["name"] for m in r.json().get("models", [])]
+            target = llm_cfg["ollama_model"]
+            found = any(target in m for m in models)
+            return {
+                "ok": True,
+                "provider": "ollama",
+                "model": target,
+                "model_available": found,
+                "models_available": models,
+            }
+        except httpx.ConnectError:
+            return {"ok": False, "error": f"Impossible de contacter Ollama ({cfg.ollama_base_url})"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
 
 # ── REST chat (simple, sans streaming) ────────────────────────────────
@@ -125,7 +172,6 @@ class ChatResponse(BaseModel):
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_rest(req: ChatRequest):
-    """Endpoint REST — envoie un message, reçoit la réponse complète."""
     session_id = req.session_id or str(uuid.uuid4())
     agent      = get_agent(session_id)
     result     = await agent.chat(req.message)
@@ -134,7 +180,6 @@ async def chat_rest(req: ChatRequest):
 
 @app.delete("/api/chat/{session_id}")
 async def reset_session(session_id: str):
-    """Réinitialise l'historique d'une session."""
     delete_session(session_id)
     return {"status": "reset", "session_id": session_id}
 
@@ -143,14 +188,6 @@ async def reset_session(session_id: str):
 
 @app.websocket("/ws/chat/{session_id}")
 async def websocket_chat(ws: WebSocket, session_id: str):
-    """
-    WebSocket bidirectionnel.
-    Protocole :
-      Client → {"message": "..."} 
-      Server → {"type": "thinking", "tool": "...", "input": "..."}  (étapes)
-              → {"type": "answer",   "text": "..."}                 (réponse finale)
-              → {"type": "error",    "text": "..."}                 (erreur)
-    """
     await ws.accept()
     log.info("WS connected: %s", session_id)
     agent = get_agent(session_id)
@@ -172,12 +209,10 @@ async def websocket_chat(ws: WebSocket, session_id: str):
                 await ws.send_json({"type": "system", "text": "Historique réinitialisé."})
                 continue
 
-            # Envoyer un indicateur "en cours de réflexion"
             await ws.send_json({"type": "thinking", "text": "Analyse en cours…"})
 
             result = await agent.chat(msg)
 
-            # Envoyer les étapes intermédiaires (tools utilisés)
             for step in result.get("steps", []):
                 await ws.send_json({
                     "type":   "tool_call",
@@ -186,7 +221,6 @@ async def websocket_chat(ws: WebSocket, session_id: str):
                     "output": step["output"][:300],
                 })
 
-            # Réponse finale
             if result.get("error"):
                 await ws.send_json({"type": "error", "text": result["answer"]})
             else:
@@ -206,10 +240,6 @@ async def websocket_chat(ws: WebSocket, session_id: str):
 
 @app.post("/api/teams/messages")
 async def teams_messages(request_body: dict):
-    """
-    Reçoit les messages Teams via Bot Framework.
-    Configure l'URL dans le portail Azure Bot comme messaging endpoint.
-    """
     from teams_bot.bot import handle_teams_message
     try:
         response = await handle_teams_message(request_body)

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Settings, X, Check, Key, Globe, Cpu, Loader2 } from "lucide-react";
+import { Settings, X, Check, Key, Globe, Cpu, Loader2, Zap, AlertCircle, CheckCircle2 } from "lucide-react";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8001";
 
@@ -10,6 +10,16 @@ interface LLMConfig {
   openai_model: string;
   openai_base_url: string;
   ollama_model: string;
+}
+
+interface TestResult {
+  ok: boolean;
+  error?: string;
+  provider?: string;
+  model?: string;
+  model_available?: boolean;
+  models_sample?: string[];
+  models_available?: string[];
 }
 
 const OPENAI_MODELS = [
@@ -25,6 +35,8 @@ export default function LLMConfigPanel() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   // Form state
   const [provider, setProvider] = useState("ollama");
@@ -34,7 +46,7 @@ export default function LLMConfigPanel() {
   const [ollamaModel, setOllamaModel] = useState("llama3.1");
 
   useEffect(() => {
-    if (open) fetchConfig();
+    if (open) { fetchConfig(); setTestResult(null); }
   }, [open]);
 
   async function fetchConfig() {
@@ -55,6 +67,7 @@ export default function LLMConfigPanel() {
   async function handleSave() {
     setSaving(true);
     setSaved(false);
+    setTestResult(null);
     try {
       await fetch(`${API_URL}/api/llm/config`, {
         method: "PUT",
@@ -74,6 +87,21 @@ export default function LLMConfigPanel() {
     setSaving(false);
   }
 
+  async function handleTest() {
+    setTesting(true);
+    setTestResult(null);
+    // Save first so backend uses current values
+    await handleSave();
+    try {
+      const r = await fetch(`${API_URL}/api/llm/test`, { method: "POST" });
+      const data: TestResult = await r.json();
+      setTestResult(data);
+    } catch (e) {
+      setTestResult({ ok: false, error: "Impossible de contacter le backend" });
+    }
+    setTesting(false);
+  }
+
   return (
     <>
       <button
@@ -86,7 +114,7 @@ export default function LLMConfigPanel() {
 
       {open && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setOpen(false)}>
-          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700">
               <div className="flex items-center gap-2">
                 <Cpu size={18} className="text-violet-500" />
@@ -112,7 +140,7 @@ export default function LLMConfigPanel() {
                       {(["ollama", "openai"] as const).map(p => (
                         <button
                           key={p}
-                          onClick={() => setProvider(p)}
+                          onClick={() => { setProvider(p); setTestResult(null); }}
                           className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium transition-all border ${
                             provider === p
                               ? "bg-violet-50 dark:bg-violet-900/30 border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300"
@@ -163,7 +191,7 @@ export default function LLMConfigPanel() {
                       <div>
                         <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
                           <Globe size={12} className="inline mr-1" />
-                          Base URL (OpenAI-compatible)
+                          Base URL
                         </label>
                         <input
                           value={baseUrl}
@@ -175,7 +203,6 @@ export default function LLMConfigPanel() {
                       </div>
                     </>
                   ) : (
-                    /* Ollama model */
                     <div>
                       <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Modèle Ollama</label>
                       <input
@@ -188,24 +215,67 @@ export default function LLMConfigPanel() {
                     </div>
                   )}
 
-                  {/* Save button */}
-                  <button
-                    onClick={handleSave}
-                    disabled={saving}
-                    className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                      saved
-                        ? "bg-emerald-500 text-white"
-                        : "bg-violet-600 hover:bg-violet-700 text-white"
-                    } disabled:opacity-50`}
-                  >
-                    {saving ? (
-                      <><Loader2 size={14} className="animate-spin" /> Sauvegarde...</>
-                    ) : saved ? (
-                      <><Check size={14} /> Sauvegardé !</>
-                    ) : (
-                      "Appliquer"
-                    )}
-                  </button>
+                  {/* Test result */}
+                  {testResult && (
+                    <div className={`rounded-xl border px-4 py-3 text-sm ${
+                      testResult.ok
+                        ? "bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300"
+                        : "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300"
+                    }`}>
+                      <div className="flex items-center gap-2 font-medium mb-1">
+                        {testResult.ok
+                          ? <><CheckCircle2 size={16} /> Connexion réussie</>
+                          : <><AlertCircle size={16} /> Connexion échouée</>
+                        }
+                      </div>
+                      {testResult.ok ? (
+                        <div className="text-xs space-y-0.5">
+                          <p>Provider : <span className="font-mono">{testResult.provider}</span></p>
+                          <p>Modèle : <span className="font-mono">{testResult.model}</span> {testResult.model_available ? "✓ disponible" : "⚠ non trouvé"}</p>
+                          {testResult.models_sample && (
+                            <p>Modèles dispo : {testResult.models_sample.join(", ")}</p>
+                          )}
+                          {testResult.models_available && (
+                            <p>Modèles installés : {testResult.models_available.join(", ")}</p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-xs">{testResult.error}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Buttons */}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleTest}
+                      disabled={testing || saving}
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-all disabled:opacity-50"
+                    >
+                      {testing ? (
+                        <><Loader2 size={14} className="animate-spin" /> Test...</>
+                      ) : (
+                        <><Zap size={14} /> Tester la connexion</>
+                      )}
+                    </button>
+                    <button
+                      onClick={handleSave}
+                      disabled={saving}
+                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                        saved
+                          ? "bg-emerald-500 text-white"
+                          : "bg-violet-600 hover:bg-violet-700 text-white"
+                      } disabled:opacity-50`}
+                    >
+                      {saving ? (
+                        <><Loader2 size={14} className="animate-spin" /> Sauvegarde...</>
+                      ) : saved ? (
+                        <><Check size={14} /> Sauvegardé !</>
+                      ) : (
+                        "Appliquer"
+                      )}
+                    </button>
+                  </div>
 
                   <p className="text-xs text-slate-400 text-center">
                     Le changement de provider réinitialise les sessions actives.

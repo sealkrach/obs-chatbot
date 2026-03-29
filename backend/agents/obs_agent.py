@@ -36,7 +36,7 @@ Règles :
 
 def _build_llm():
     """Build the LLM based on current runtime config."""
-    from backend.main import get_llm_config
+    from backend.llm_config import get_llm_config
     llm_cfg = get_llm_config()
 
     if llm_cfg["provider"] == "openai" and llm_cfg["openai_api_key"]:
