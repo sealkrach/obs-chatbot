@@ -2,9 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertTriangle, CheckCircle, ChevronDown, ChevronRight,
-         Loader2, RefreshCw, Send, Terminal, Trash2, Wifi, WifiOff } from "lucide-react";
+         Loader2, Mic, MicOff, RefreshCw, Send, Terminal, Trash2, Wifi, WifiOff } from "lucide-react";
 import { useChat, type Message } from "../hooks/useChat";
+import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import LLMConfigPanel from "./LLMConfigPanel";
+import CollectorConfigPanel from "./CollectorConfigPanel";
 
 // ── Utilitaire ────────────────────────────────────────────────────────
 
@@ -164,6 +166,17 @@ export default function ChatWindow() {
   const [showTools, setShowTools] = useState(true);
   const bottomRef                 = useRef<HTMLDivElement>(null);
 
+  const { listening, supported: micSupported, toggle: toggleMic } = useSpeechRecognition({
+    lang: "fr-FR",
+    onResult: (transcript) => {
+      if (connState === "connected" && !isThinking) {
+        setInput(transcript);
+        // Auto-send after voice input
+        sendMessage(transcript);
+      }
+    },
+  });
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isThinking]);
@@ -194,6 +207,7 @@ export default function ChatWindow() {
         </div>
         <div className="flex items-center gap-3">
           <ConnectionBadge state={connState} onReconnect={reconnect} />
+          <CollectorConfigPanel />
           <LLMConfigPanel />
           <button
             onClick={() => setShowTools(t => !t)}
@@ -277,6 +291,24 @@ export default function ChatWindow() {
             )}
             style={{ maxHeight: "120px" }}
           />
+          {/* Mic button */}
+          {micSupported && (
+            <button
+              onClick={toggleMic}
+              disabled={connState !== "connected" || isThinking}
+              title={listening ? "Arrêter l'écoute" : "Dicter un message"}
+              className={cx(
+                "p-2.5 rounded-xl transition-all shrink-0",
+                listening
+                  ? "bg-red-500 text-white animate-pulse"
+                  : connState === "connected" && !isThinking
+                    ? "bg-slate-100 dark:bg-slate-700 text-slate-500 hover:bg-violet-100 hover:text-violet-600 dark:hover:bg-violet-900/40 dark:hover:text-violet-400"
+                    : "bg-slate-100 dark:bg-slate-700 text-slate-300 cursor-not-allowed"
+              )}
+            >
+              {listening ? <MicOff size={18} /> : <Mic size={18} />}
+            </button>
+          )}
           <button
             onClick={handleSend}
             disabled={!input.trim() || connState !== "connected" || isThinking}
@@ -292,8 +324,14 @@ export default function ChatWindow() {
               : <Send size={18} />}
           </button>
         </div>
+        {listening && (
+          <div className="flex items-center gap-2 mt-1.5 justify-center">
+            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+            <p className="text-xs text-red-500 font-medium">Écoute en cours… Parlez maintenant</p>
+          </div>
+        )}
         <p className="text-xs text-slate-400 mt-1.5 text-center">
-          Entrée pour envoyer · Shift+Entrée pour nouvelle ligne · /reset pour effacer
+          Entrée pour envoyer · Shift+Entrée pour nouvelle ligne{micSupported ? " · 🎤 Micro pour dicter" : ""} · /reset pour effacer
         </p>
       </div>
     </div>

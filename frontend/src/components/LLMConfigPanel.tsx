@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Settings, X, Check, Key, Globe, Cpu, Loader2, Zap, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Settings, X, Check, Key, Globe, Cpu, Loader2, Zap, AlertCircle, CheckCircle2, RefreshCw } from "lucide-react";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8001";
 
@@ -22,13 +22,6 @@ interface TestResult {
   models_available?: string[];
 }
 
-const OPENAI_MODELS = [
-  "gpt-4o-mini",
-  "gpt-4o",
-  "gpt-4-turbo",
-  "gpt-3.5-turbo",
-];
-
 export default function LLMConfigPanel() {
   const [open, setOpen] = useState(false);
   const [config, setConfig] = useState<LLMConfig | null>(null);
@@ -37,6 +30,9 @@ export default function LLMConfigPanel() {
   const [saved, setSaved] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelsError, setModelsError] = useState("");
 
   // Form state
   const [provider, setProvider] = useState("ollama");
@@ -46,7 +42,7 @@ export default function LLMConfigPanel() {
   const [ollamaModel, setOllamaModel] = useState("llama3.1");
 
   useEffect(() => {
-    if (open) { fetchConfig(); setTestResult(null); }
+    if (open) { fetchConfig(); setTestResult(null); setAvailableModels([]); setModelsError(""); }
   }, [open]);
 
   async function fetchConfig() {
@@ -90,7 +86,6 @@ export default function LLMConfigPanel() {
   async function handleTest() {
     setTesting(true);
     setTestResult(null);
-    // Save first so backend uses current values
     await handleSave();
     try {
       const r = await fetch(`${API_URL}/api/llm/test`, { method: "POST" });
@@ -100,6 +95,27 @@ export default function LLMConfigPanel() {
       setTestResult({ ok: false, error: "Impossible de contacter le backend" });
     }
     setTesting(false);
+  }
+
+  async function handleFetchModels() {
+    setFetchingModels(true);
+    setModelsError("");
+    setAvailableModels([]);
+    // Save config first so backend uses current key/url
+    await handleSave();
+    try {
+      const r = await fetch(`${API_URL}/api/llm/models`, { method: "POST" });
+      const data = await r.json();
+      if (data.ok) {
+        setAvailableModels(data.models);
+        if (data.models.length === 0) setModelsError("Aucun modèle trouvé");
+      } else {
+        setModelsError(data.error || "Erreur");
+      }
+    } catch {
+      setModelsError("Impossible de contacter le backend");
+    }
+    setFetchingModels(false);
   }
 
   return (
@@ -140,7 +156,7 @@ export default function LLMConfigPanel() {
                       {(["ollama", "openai"] as const).map(p => (
                         <button
                           key={p}
-                          onClick={() => { setProvider(p); setTestResult(null); }}
+                          onClick={() => { setProvider(p); setTestResult(null); setAvailableModels([]); setModelsError(""); }}
                           className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium transition-all border ${
                             provider === p
                               ? "bg-violet-50 dark:bg-violet-900/30 border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300"
@@ -173,20 +189,6 @@ export default function LLMConfigPanel() {
                         )}
                       </div>
 
-                      {/* Model */}
-                      <div>
-                        <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Modèle</label>
-                        <select
-                          value={model}
-                          onChange={e => setModel(e.target.value)}
-                          className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-500"
-                        >
-                          {OPENAI_MODELS.map(m => (
-                            <option key={m} value={m}>{m}</option>
-                          ))}
-                        </select>
-                      </div>
-
                       {/* Base URL */}
                       <div>
                         <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
@@ -201,17 +203,77 @@ export default function LLMConfigPanel() {
                         />
                         <p className="text-xs text-slate-400 mt-1">Compatible : OpenAI, Azure, Mistral, Groq, Together, etc.</p>
                       </div>
+
+                      {/* Model — dynamic select + refresh */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-xs font-medium text-slate-500 dark:text-slate-400">Modèle</label>
+                          <button
+                            onClick={handleFetchModels}
+                            disabled={fetchingModels}
+                            className="flex items-center gap-1 text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 disabled:text-slate-400"
+                          >
+                            <RefreshCw size={12} className={fetchingModels ? "animate-spin" : ""} />
+                            {fetchingModels ? "Chargement…" : "Charger les modèles"}
+                          </button>
+                        </div>
+                        {availableModels.length > 0 ? (
+                          <select
+                            value={model}
+                            onChange={e => setModel(e.target.value)}
+                            className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                          >
+                            {availableModels.map(m => (
+                              <option key={m} value={m}>{m}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            value={model}
+                            onChange={e => setModel(e.target.value)}
+                            placeholder="gpt-4o-mini"
+                            className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                          />
+                        )}
+                        {modelsError && <p className="text-xs text-red-500 mt-1">{modelsError}</p>}
+                        {availableModels.length > 0 && <p className="text-xs text-emerald-500 mt-1">{availableModels.length} modèles disponibles</p>}
+                      </div>
                     </>
                   ) : (
+                    /* Ollama — dynamic model select + refresh */
                     <div>
-                      <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Modèle Ollama</label>
-                      <input
-                        value={ollamaModel}
-                        onChange={e => setOllamaModel(e.target.value)}
-                        placeholder="llama3.1"
-                        className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
-                      />
-                      <p className="text-xs text-slate-400 mt-1">Ex: llama3.1, mistral, gemma2:9b, qwen2.5:14b</p>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-medium text-slate-500 dark:text-slate-400">Modèle Ollama</label>
+                        <button
+                          onClick={handleFetchModels}
+                          disabled={fetchingModels}
+                          className="flex items-center gap-1 text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 disabled:text-slate-400"
+                        >
+                          <RefreshCw size={12} className={fetchingModels ? "animate-spin" : ""} />
+                          {fetchingModels ? "Chargement…" : "Charger les modèles"}
+                        </button>
+                      </div>
+                      {availableModels.length > 0 ? (
+                        <select
+                          value={ollamaModel}
+                          onChange={e => setOllamaModel(e.target.value)}
+                          className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                        >
+                          {availableModels.map(m => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          value={ollamaModel}
+                          onChange={e => setOllamaModel(e.target.value)}
+                          placeholder="llama3.1"
+                          className="w-full rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                        />
+                      )}
+                      {modelsError && <p className="text-xs text-red-500 mt-1">{modelsError}</p>}
+                      {availableModels.length > 0 && <p className="text-xs text-emerald-500 mt-1">{availableModels.length} modèles installés</p>}
+                      <p className="text-xs text-slate-400 mt-1">Installer un modèle : <code className="bg-slate-100 dark:bg-slate-700 px-1 rounded">ollama pull mistral</code></p>
                     </div>
                   )}
 
@@ -231,13 +293,7 @@ export default function LLMConfigPanel() {
                       {testResult.ok ? (
                         <div className="text-xs space-y-0.5">
                           <p>Provider : <span className="font-mono">{testResult.provider}</span></p>
-                          <p>Modèle : <span className="font-mono">{testResult.model}</span> {testResult.model_available ? "✓ disponible" : "⚠ non trouvé"}</p>
-                          {testResult.models_sample && (
-                            <p>Modèles dispo : {testResult.models_sample.join(", ")}</p>
-                          )}
-                          {testResult.models_available && (
-                            <p>Modèles installés : {testResult.models_available.join(", ")}</p>
-                          )}
+                          <p>Modèle : <span className="font-mono">{testResult.model}</span> {testResult.model_available ? "✓" : "⚠ non trouvé"}</p>
                         </div>
                       ) : (
                         <p className="text-xs">{testResult.error}</p>
@@ -255,7 +311,7 @@ export default function LLMConfigPanel() {
                       {testing ? (
                         <><Loader2 size={14} className="animate-spin" /> Test...</>
                       ) : (
-                        <><Zap size={14} /> Tester la connexion</>
+                        <><Zap size={14} /> Tester</>
                       )}
                     </button>
                     <button
@@ -268,9 +324,9 @@ export default function LLMConfigPanel() {
                       } disabled:opacity-50`}
                     >
                       {saving ? (
-                        <><Loader2 size={14} className="animate-spin" /> Sauvegarde...</>
+                        <><Loader2 size={14} className="animate-spin" /> ...</>
                       ) : saved ? (
-                        <><Check size={14} /> Sauvegardé !</>
+                        <><Check size={14} /> OK !</>
                       ) : (
                         "Appliquer"
                       )}
@@ -278,7 +334,7 @@ export default function LLMConfigPanel() {
                   </div>
 
                   <p className="text-xs text-slate-400 text-center">
-                    Le changement de provider réinitialise les sessions actives.
+                    Changer de provider réinitialise les sessions actives.
                   </p>
                 </>
               )}

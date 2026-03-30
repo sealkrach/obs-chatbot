@@ -157,6 +157,99 @@ async def test_llm_connection():
             return {"ok": False, "error": str(e)}
 
 
+@app.post("/api/llm/models")
+async def list_available_models():
+    """Fetch available models from the current provider."""
+    import httpx
+    llm_cfg = get_llm_config()
+
+    if llm_cfg["provider"] == "openai":
+        if not llm_cfg["openai_api_key"]:
+            return {"ok": False, "models": [], "error": "Aucune clé API configurée"}
+        try:
+            base = llm_cfg["openai_base_url"].rstrip("/")
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(
+                    f"{base}/models",
+                    headers={"Authorization": f"Bearer {llm_cfg['openai_api_key']}"},
+                )
+            if r.status_code == 200:
+                all_models = [m.get("id", "") for m in r.json().get("data", [])]
+                # Filter to chat models only
+                chat_models = sorted([m for m in all_models if any(k in m for k in ("gpt", "o1", "o3", "claude", "mistral", "llama", "gemma", "command", "deepseek"))])
+                return {"ok": True, "models": chat_models if chat_models else sorted(all_models)}
+            elif r.status_code == 401:
+                return {"ok": False, "models": [], "error": "Clé API invalide"}
+            else:
+                return {"ok": False, "models": [], "error": f"HTTP {r.status_code}"}
+        except Exception as e:
+            return {"ok": False, "models": [], "error": str(e)}
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                r = await c.get(f"{cfg.ollama_base_url}/api/tags")
+            if r.status_code == 200:
+                models = [m["name"] for m in r.json().get("models", [])]
+                return {"ok": True, "models": sorted(models)}
+            return {"ok": False, "models": [], "error": f"Ollama HTTP {r.status_code}"}
+        except Exception as e:
+            return {"ok": False, "models": [], "error": str(e)}
+
+
+# ── Collector config + query endpoints ────────────────────────────────
+
+class CollectorConfigRequest(BaseModel):
+    enabled: bool | None = None
+    interval_seconds: int | None = None
+    metrics: dict | None = None
+
+
+@app.get("/api/collector/config")
+async def get_collector_config_endpoint():
+    from backend.collector.macos_collector import get_collector_config as gcc
+    return gcc()
+
+
+@app.put("/api/collector/config")
+async def update_collector_config_endpoint(req: CollectorConfigRequest):
+    from backend.collector.macos_collector import update_collector_config as ucc, get_collector_config as gcc, start_collector, stop_collector
+    ucc(enabled=req.enabled, interval_seconds=req.interval_seconds, metrics=req.metrics)
+    if req.enabled:
+        start_collector()
+    elif req.enabled is False:
+        stop_collector()
+    return {"status": "ok", **gcc()}
+
+
+@app.post("/api/collector/collect")
+async def trigger_collection():
+    import asyncio
+    from backend.collector.macos_collector import collect_once
+    try:
+        await asyncio.wait_for(asyncio.to_thread(collect_once), timeout=10)
+        return {"status": "ok", "message": "Collection done"}
+    except asyncio.TimeoutError:
+        return {"status": "partial", "message": "Collection timed out but partial data may be available"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/collector/metrics")
+async def query_metrics(metric: str | None = None, last_minutes: int = 5, last_n: int = 100):
+    from backend.collector.metrics_store import store
+    if metric:
+        data = store.query(metric_name=metric, last_n=last_n, since_seconds=last_minutes * 60)
+    else:
+        data = store.latest()
+    return {"count": len(data), "data": data}
+
+
+@app.get("/api/collector/stats")
+async def collector_stats():
+    from backend.collector.metrics_store import store
+    return store.stats()
+
+
 # ── REST chat (simple, sans streaming) ────────────────────────────────
 
 class ChatRequest(BaseModel):
