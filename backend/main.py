@@ -283,7 +283,6 @@ async def reset_session(session_id: str):
 async def websocket_chat(ws: WebSocket, session_id: str):
     await ws.accept()
     log.info("WS connected: %s", session_id)
-    agent = get_agent(session_id)
 
     try:
         while True:
@@ -296,6 +295,9 @@ async def websocket_chat(ws: WebSocket, session_id: str):
             msg = data.get("message", "").strip()
             if not msg:
                 continue
+
+            # Re-fetch agent each message so config changes take effect
+            agent = get_agent(session_id)
 
             if msg.lower() in ("/reset", "/clear"):
                 agent.reset()

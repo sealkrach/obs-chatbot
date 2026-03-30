@@ -48,6 +48,8 @@ services:
       OLLAMA_BASE_URL: http://ollama:11434
       OBS_API_URL: http://mock-obs:9000
       VICTORIAMETRICS_URL: http://mock-obs:9000
+    volumes:
+      - chatbot-data:/app/data
     depends_on:
       ollama:
         condition: service_healthy
@@ -72,3 +74,4 @@ services:
 
 volumes:
   ollama-data:
+  chatbot-data:
