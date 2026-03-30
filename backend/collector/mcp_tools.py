@@ -5,7 +5,6 @@ The LLM calls them to query local system metrics without knowing the storage int
 """
 from __future__ import annotations
 
-import json
 from typing import Optional
 
 from langchain_core.tools import tool
@@ -20,7 +19,7 @@ def get_local_metrics(
 ) -> str:
     """
     Récupère les métriques système locales (macOS) collectées par le module OpenTelemetry.
-    metric : nom de la métrique (ex: system.cpu.utilization, system.memory.utilization, system.disk.utilization, system.network.bytes_recv, system.load.1m, system.battery.percent). Laisser vide pour obtenir les dernières valeurs de toutes les métriques.
+    metric : nom de la métrique (ex: system.cpu.utilization, system.memory.utilization, system.disk.utilization, system.network.bytes_recv, system.load.1m, system.battery.percent, process.cpu.utilization, process.memory.rss, process.disk.read, process.network.connections). Laisser vide pour obtenir les dernières valeurs de toutes les métriques.
     last_minutes : fenêtre de temps en minutes (défaut 5).
     Retourne les données au format OTLP avec timestamp, valeur, unité et attributs.
     """
@@ -35,11 +34,10 @@ def get_local_metrics(
     lines = [f"**Métriques locales** ({len(data)} points) :\n"]
 
     if metric:
-        for d in data[-10:]:  # Last 10 points
+        for d in data[-15:]:
             attrs = ", ".join(f"{k}={v}" for k, v in d["attributes"].items()) if d["attributes"] else "global"
             lines.append(f"- [{d['timestamp_iso']}] **{d['value']}{d['unit']}** ({attrs})")
     else:
-        # Group by metric name, show latest
         by_name: dict[str, list] = {}
         for d in data:
             by_name.setdefault(d["metric_name"], []).append(d)
@@ -53,9 +51,57 @@ def get_local_metrics(
 
 
 @tool
+def get_top_processes(sort_by: str = "cpu", top_n: int = 10) -> str:
+    """
+    Retourne les processus les plus gourmands du système macOS local.
+    sort_by : critère de tri — 'cpu' (défaut), 'memory', 'disk', 'network'
+    top_n : nombre de processus à retourner (défaut 10)
+    """
+    metric_map = {
+        "cpu": "process.cpu.utilization",
+        "memory": "process.memory.rss",
+        "disk": "process.disk.read",
+        "network": "process.network.connections",
+    }
+    metric = metric_map.get(sort_by, "process.cpu.utilization")
+    data = store.latest(metric_name=metric)
+
+    if not data:
+        return f"Aucune donnée processus disponible. Vérifiez que le collecteur est activé avec les métriques 'processes'."
+
+    # Sort by value descending
+    data.sort(key=lambda d: d["value"], reverse=True)
+
+    lines = [f"**Top {min(top_n, len(data))} processus par {sort_by}** :\n"]
+    lines.append(f"| # | Processus | PID | {sort_by.upper()} | User |")
+    lines.append("|---|-----------|-----|------|------|")
+
+    for i, d in enumerate(data[:top_n]):
+        name = d["attributes"].get("process.name", "?")
+        pid = d["attributes"].get("process.pid", "?")
+        user = d["attributes"].get("process.user", "?")
+        lines.append(f"| {i+1} | {name} | {pid} | {d['value']} {d['unit']} | {user} |")
+
+    # Also show complementary metrics for top process
+    if data:
+        top_pid = data[0]["attributes"].get("process.pid")
+        top_name = data[0]["attributes"].get("process.name", "?")
+        lines.append(f"\n**Détails de {top_name} (PID {top_pid})** :")
+        for m in ["process.cpu.utilization", "process.memory.utilization", "process.memory.rss",
+                   "process.threads", "process.disk.read", "process.disk.write", "process.network.connections"]:
+            pts = store.latest(metric_name=m)
+            for p in pts:
+                if p["attributes"].get("process.pid") == top_pid:
+                    lines.append(f"- {m.split('.')[-1]} : **{p['value']} {p['unit']}**")
+                    break
+
+    return "\n".join(lines)
+
+
+@tool
 def get_system_summary() -> str:
     """
-    Retourne un résumé complet de l'état du système macOS local avec toutes les métriques clés : CPU, mémoire, disque, réseau, batterie, charge.
+    Retourne un résumé complet de l'état du système macOS local avec toutes les métriques clés : CPU, mémoire, disque, réseau, batterie, charge et top processus.
     Utilise cette fonction quand l'utilisateur demande l'état général du système ou un diagnostic.
     """
     latest = store.latest()
@@ -70,79 +116,82 @@ def get_system_summary() -> str:
         points = by_name.get(name, [])
         if not points:
             return "N/A"
-        p = points[0]
-        return f"{p['value']} {p['unit']}"
-
-    def val_with_attrs(name: str) -> list[str]:
-        points = by_name.get(name, [])
-        result = []
-        for p in points:
-            attrs = ", ".join(f"{k}={v}" for k, v in p["attributes"].items()) if p["attributes"] else "global"
-            result.append(f"  - {attrs}: **{p['value']} {p['unit']}**")
-        return result
+        return f"{points[0]['value']} {points[0]['unit']}"
 
     lines = [
-        "## État du système macOS\n",
+        "## État du système\n",
         f"### CPU",
         f"- Utilisation globale : **{val('system.cpu.utilization')}**",
-        f"- Cœurs : {val('system.cpu.count')}",
-        f"- Fréquence : {val('system.cpu.frequency')}",
+        f"- Cœurs logiques/physiques : {val('system.cpu.count')} / {val('system.cpu.count.physical')}",
+        f"- Fréquence : {val('system.cpu.frequency.current')} (max {val('system.cpu.frequency.max')})",
         f"- Charge 1/5/15 min : {val('system.load.1m')} / {val('system.load.5m')} / {val('system.load.15m')}",
         f"\n### Mémoire",
         f"- Utilisation : **{val('system.memory.utilization')}**",
         f"- Utilisée / Total : {val('system.memory.used')} / {val('system.memory.total')}",
         f"- Disponible : {val('system.memory.available')}",
-        f"- Swap : {val('system.swap.utilization')}",
+        f"- Swap : {val('system.swap.utilization')} ({val('system.swap.used')} / {val('system.swap.total')})",
     ]
 
-    disk_points = by_name.get("system.disk.utilization", [])
-    if disk_points:
-        lines.append("\n### Disque")
-        for p in disk_points:
-            mp = p["attributes"].get("disk.mountpoint", "?")
-            lines.append(f"- {mp} : **{p['value']} {p['unit']}**")
+    lines.extend([
+        f"\n### Disque",
+        f"- Utilisation / : **{val('system.disk.utilization')}**",
+        f"- Utilisé / Total : {val('system.disk.used')} / {val('system.disk.total')}",
+        f"- Libre : {val('system.disk.free')}",
+        f"- I/O lecture : {val('system.disk.io.read')} ({val('system.disk.io.read_count')})",
+        f"- I/O écriture : {val('system.disk.io.write')} ({val('system.disk.io.write_count')})",
+    ])
 
     lines.extend([
         f"\n### Réseau",
         f"- Envoyé : {val('system.network.bytes_sent')}",
         f"- Reçu : {val('system.network.bytes_recv')}",
+        f"- Paquets : {val('system.network.packets_sent')} envoyés / {val('system.network.packets_recv')} reçus",
         f"- Erreurs : {val('system.network.errors_in')} in / {val('system.network.errors_out')} out",
+        f"- Connexions : {val('system.network.connections.established')} actives / {val('system.network.connections.total')} total",
     ])
 
     bat = by_name.get("system.battery.percent")
     if bat:
         plugged = by_name.get("system.battery.plugged", [{}])
         plug_str = " (branché)" if plugged and plugged[0].get("value") == 1.0 else " (sur batterie)"
-        lines.append(f"\n### Batterie\n- **{bat[0]['value']}%**{plug_str}")
+        time_left = val("system.battery.time_left")
+        extra = f" — {time_left} restantes" if time_left != "N/A" else ""
+        lines.append(f"\n### Batterie\n- **{bat[0]['value']}%**{plug_str}{extra}")
 
-    lines.append(f"\n### Processus\n- Total : {val('system.process.count')}")
-    top_procs = by_name.get("system.process.cpu", [])
-    if top_procs:
-        lines.append("- Top CPU :")
-        for p in top_procs[:5]:
+    # Top processes
+    lines.append(f"\n### Processus ({val('system.process.count')})")
+    proc_cpu = by_name.get("process.cpu.utilization", [])
+    proc_mem = {p["attributes"].get("process.pid"): p for p in by_name.get("process.memory.rss", [])}
+    proc_cpu.sort(key=lambda p: p["value"], reverse=True)
+    if proc_cpu:
+        lines.append("| Processus | CPU | RAM | Threads | User |")
+        lines.append("|-----------|-----|-----|---------|------|")
+        for p in proc_cpu[:10]:
+            pid = p["attributes"].get("process.pid", "?")
             name = p["attributes"].get("process.name", "?")
-            lines.append(f"  - {name} : {p['value']}%")
+            user = p["attributes"].get("process.user", "?")
+            mem = proc_mem.get(pid)
+            mem_str = f"{mem['value']} {mem['unit']}" if mem else "?"
+            threads_pts = [t for t in by_name.get("process.threads", []) if t["attributes"].get("process.pid") == pid]
+            thr = threads_pts[0]["value"] if threads_pts else "?"
+            lines.append(f"| {name} | {p['value']}% | {mem_str} | {thr} | {user} |")
 
-    # Health assessment
-    cpu_val = by_name.get("system.cpu.utilization", [{}])
-    mem_val = by_name.get("system.memory.utilization", [{}])
-    cpu_pct = cpu_val[0].get("value", 0) if cpu_val else 0
-    mem_pct = mem_val[0].get("value", 0) if mem_val else 0
+    # Diagnostic
+    cpu_pct = by_name.get("system.cpu.utilization", [{}])
+    mem_pct = by_name.get("system.memory.utilization", [{}])
+    disk_pct = by_name.get("system.disk.utilization", [{}])
+    cpu_v = cpu_pct[0].get("value", 0) if cpu_pct else 0
+    mem_v = mem_pct[0].get("value", 0) if mem_pct else 0
+    disk_v = disk_pct[0].get("value", 0) if disk_pct else 0
 
     lines.append("\n### Diagnostic")
-    if cpu_pct > 85:
-        lines.append(f"- 🔴 **CPU critique** ({cpu_pct}%) — action recommandée")
-    elif cpu_pct > 70:
-        lines.append(f"- 🟡 **CPU élevé** ({cpu_pct}%) — à surveiller")
-    else:
-        lines.append(f"- ✅ CPU normal ({cpu_pct}%)")
-
-    if mem_pct > 85:
-        lines.append(f"- 🔴 **Mémoire critique** ({mem_pct}%) — action recommandée")
-    elif mem_pct > 70:
-        lines.append(f"- 🟡 **Mémoire élevée** ({mem_pct}%) — à surveiller")
-    else:
-        lines.append(f"- ✅ Mémoire normale ({mem_pct}%)")
+    for label, v in [("CPU", cpu_v), ("Mémoire", mem_v), ("Disque", disk_v)]:
+        if v > 85:
+            lines.append(f"- 🔴 **{label} critique** ({v}%)")
+        elif v > 70:
+            lines.append(f"- 🟡 **{label} élevé** ({v}%)")
+        else:
+            lines.append(f"- ✅ {label} normal ({v}%)")
 
     return "\n".join(lines)
 
@@ -151,14 +200,14 @@ def get_system_summary() -> str:
 def list_collected_metrics() -> str:
     """
     Liste toutes les métriques OTLP actuellement collectées avec des statistiques sur le store.
-    Utile pour savoir quelles métriques sont disponibles.
     """
     stats = store.stats()
     if not stats["metrics"]:
         return "Aucune métrique collectée. Le collecteur n'est peut-être pas activé."
 
     lines = [
-        f"**Store OpenTelemetry** : {stats['total_points']} / {stats['max_capacity']} points\n",
+        f"**Store OpenTelemetry** : {stats['total_points']} / {stats['max_capacity']} points",
+        f"**Persisté** : {stats['persisted_file']} ({'oui' if stats['file_exists'] else 'non'})\n",
         "**Métriques disponibles** :",
     ]
     for m in stats["metrics"]:
@@ -167,9 +216,9 @@ def list_collected_metrics() -> str:
     return "\n".join(lines)
 
 
-# All MCP tools to register with the agent
 MCP_TOOLS = [
     get_local_metrics,
+    get_top_processes,
     get_system_summary,
     list_collected_metrics,
 ]
